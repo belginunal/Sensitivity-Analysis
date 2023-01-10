@@ -5,4 +5,4 @@ PowerSim is the main file and it contains the full analysis to output simulation
 It takes ~4 days to run the whole script on a regular computer. 
 It calls for the ContextFunctions.R, ContextFunctions_Ind.R, ItemFunctions.R, ItemFunctions_Ind.R files, so these dependencies should be in the same directory as the main file.
 
-Visualizations file contains the dot plots and ROCs that were created for each simulation. The file needs Sim_Result.csv file.
+Visualizations file contains the dot plots and ROCs that were created for each simulation. The file needs Sim_Result.csv file to run.
