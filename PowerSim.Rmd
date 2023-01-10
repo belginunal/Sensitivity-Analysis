@@ -1,0 +1,960 @@
+---
+title: "Sensitivity Analysis"
+author: "Belgin Unal"
+date: "2022-12-26"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+options(dplyr.summarise.inform = FALSE)
+```
+
+Loading the required packages
+```{r}
+library(lme4)
+library(tidyverse)
+library(EstimationTools)
+library(ggsci)
+library(ggh4x)
+library(gtable)
+library(grid)
+library(jcolors)
+```
+
+
+```{r}
+setwd("C:/Users/Belgin/Desktop/Sensitivity Analysis")
+```
+
+
+Parameter values that comes from the overall function fits. 
+These values are obtained from the combined analysis of the 4 experiments.
+```{r}
+a_item <- 0.67
+a_source <- 0.425
+b_item <- 0.0205
+b_source <- 0.0292
+c_item <- 0.279
+c_source <- 1.19
+```
+
+
+Standard deviation values that come from the combined analysis.
+```{r}
+# ai_std <- 0.130819
+# as_std <- 0.2468174
+# ci_std <- 1.075106
+# cs_std <- 5.61838
+# 
+# ai_slope <- .00483695
+# as_slope <- .07223674
+# ci_slope <- .01607478
+# cs_slope <- -.07891637
+```
+
+
+SIMULATE DATA
+```{r}
+# param_overall comes from the above values of the parameters. They will the mean of their regression functions
+# b1 is the slope/effect size
+# b0 is the intercept
+
+simulate_param <- function(n_subjects = 35, 
+                           n_total_obs = 144,
+                           n_obs = 36, 
+                           n_jol = 4, 
+                           param_overall, b1, param_name){
+  
+  simdat <- data.frame(subject=factor(rep(1:n_subjects, each = n_total_obs)), 
+                     jolQ=rep(1:n_jol, each = n_obs)) #complete data frame
+  
+  if (param_name == "ai" | param_name == "as"){
+    sd = .5
+  } else if (param_name == "ci" | param_name == "cs"){
+    sd = .5
+  }
+  
+  eps = rnorm(n = n_total_obs*n_subjects, mean = 0, sd = sd)  #gaussian noise
+  
+  b0 = param_overall - (b1*(2.5)) #this allows me to keep the mean same across different slope values
+  param = b0 + b1*(simdat$jolQ) + eps  #formula for the parameter
+  
+  #add the parameter values to the data frame
+  param = b0 + b1*(simdat$jolQ) + eps  #formula for the parameter
+  
+  simdat_param_df <- aggregate(param ~ jolQ + subject, data=simdat, FUN="mean")
+  
+  colnames(simdat_param_df) <- c("jolQ", "subject", param_name)
+  
+  return(simdat_param_df)
+}
+```
+
+
+Slope Values
+
+.01 --> small effect of JOL
+.03 --> medium effect of JOL
+.08 --> large effect of JOL
+
+```{r}
+ai_slope <- c(0, .01, .03, .08, 0, 0, 0, 0, 0, 0, 0, 0, 0, .01, .03, .08, 0, 0, 0, .01, .03, .08) 
+as_slope <- c(0, 0, 0, 0, .01, .03, .08, 0, 0, 0, 0, 0, 0, .01, .03, .08, 0, 0, 0, .01, .03, .08)
+cs_slope <- c(0, 0, 0, 0, 0, 0, 0, -.01, -.03, -.08, 0, 0, 0, 0, 0, 0, -.01, -.03, -.08, -.01, -.03, -.08)
+ci_slope <- c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -.01, -.03, -.08, 0, 0, 0, -.01, -.03, -.08, -.01, -.03, -.08)
+
+slope_df <- tibble(ai_slope, ci_slope, as_slope, cs_slope) #we have a total of 22 simulations to run
+```
+
+
+Generate all the parameters for each simulation and create a data frame
+```{r}
+create_total_df <- function(slope_df){
+  
+  df_total = data.frame()
+  
+  for (i in 1:nrow(slope_df)){
+    
+    ai_simdat <- simulate_param(param_overall = a_item, b1 = slope_df$ai_slope[i], param_name = "ai")
+    
+    as_simdat <- simulate_param(param_overall = a_source, b1 = slope_df$as_slope[i], param_name = "as")
+    
+    ci_simdat <- simulate_param(param_overall = c_item, b1 = slope_df$ci_slope[i], param_name = "ci")
+    
+    cs_simdat <- simulate_param(param_overall = c_source, b1 = slope_df$cs_slope[i], param_name = "cs")
+    
+    
+    df_list <- list(ai_simdat, as_simdat, ci_simdat, cs_simdat)
+    parameter_df <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list)
+
+    parameter_df$as_slope <- slope_df$as_slope[i]
+    parameter_df$cs_slope <- slope_df$cs_slope[i]
+    parameter_df$ai_slope <- slope_df$ai_slope[i]
+    parameter_df$ci_slope <- slope_df$ci_slope[i]
+    parameter_df$case <- i
+  
+    df_total <- rbind(df_total, parameter_df)
+    
+  }
+  
+  return(df_total)
+  
+}
+```
+
+
+From these values, we can find the context and item memory estimates using the forgetting function
+```{r}
+compute_item <- function(ai, t, b, ci){
+  item = ai*(t*b+1)^(-ci)
+}
+
+compute_source <- function(as, t, b, cs){
+  source = as*(t*b+1)^(-cs)
+}
+```
+
+
+Create the data frame with item and source estimates. We use the values that we obtained from the combined analysis for the scaling parameters
+```{r}
+create_lag_df <- function(parameter_df, lag_no, item_b, source_b){
+  
+  lag_df <- parameter_df
+  
+  for (i in 1:nrow(parameter_df)){
+    
+      lag_df$lag <- lag_no
+      lag_df$item[i] <- compute_item(parameter_df$ai[i],lag_no, item_b,parameter_df$ci[i])
+      lag_df$source[i] <- compute_source(parameter_df$as[i],lag_no, source_b, parameter_df$cs[i])
+      lag_df$hr[i] <- lag_df$source[i] + (1-lag_df$source[i])*lag_df$item[i]
+      lag_df$far[i] <- (1-lag_df$source[i])*lag_df$item[i]
+  }
+  
+  return(lag_df)
+  
+}
+```
+
+
+
+MODEL FIT THE WHOLE DATA
+```{r}
+# Power model implementation
+power_logL <- function(x, a, b, c, log = FALSE){
+  p <- a * (b*x[,1]+1)^(-c)
+  f <- dbinom(x = x[,2], size = m, prob = p)
+  if (log == TRUE)
+    density <- log(f) else density <- f
+  return(density)
+  }
+
+#parameter bounds to fit the whole data
+lower_w1 <- c(0,0,0) #parameter lower bounds
+upper_w1 <- c(1, 100,100) #parameter upper bounds
+init_w1 <- runif(3,0,1) #starting parameter values
+```
+
+```{r}
+m <- 144 # Independent trials
+t <- c(2, 10, 25, 50) #lags
+```
+
+
+MODEL FIT FOR INDIVIDUAL SUBJECTS
+We will fix the b parameter to the values above, and estimate a and c parameters for each subject
+
+Context Functions (one for each case,  we need to do this since the scaling b parameter is different in each case)
+```{r}
+source("ContextFunctions.R")
+```
+
+
+Item memory functions
+```{r}
+source("ItemFunctions.R")
+```
+
+```{r}
+#parameter bounds to fit individual subjects
+lower_w <- c(0,0) #parameter lower bounds
+upper_w <- c(1,1000) #parameter upper bounds
+init_w <- runif(2,0,1) #starting parameter values
+```
+
+
+Individual Item Memory Estimates for each case
+```{r}
+source("ItemFunctions_Ind.R")
+```
+
+
+Individual Context Memory Estimates for each case
+```{r}
+
+source("ContextFunctions_Ind.R")
+```
+
+
+
+```{r dplyr, warn.conflicts = FALSE}
+
+#Create data frames that we will append with p values at each iteration for each simulation case
+ai_p_values_all <- data.frame()
+as_p_values_all <- data.frame()
+ci_p_values_all <- data.frame()
+cs_p_values_all <- data.frame()
+
+start_time <- Sys.time()
+
+n_sim <- 1000 # we will run 1000 iteration
+
+for (n in 1:n_sim){
+  
+  
+  df_total <- create_total_df(slope_df)
+  
+  
+  lag_2 <- create_lag_df(df_total, 2, item_b = b_item, source_b = b_source)
+  lag_10 <- create_lag_df(df_total, 10, item_b= b_item, source_b = b_source)
+  lag_25 <- create_lag_df(df_total, 25, item_b=b_item, source_b = b_source)
+  lag_50 <- create_lag_df(df_total, 50, item_b = b_item, source_b = b_source)
+  data.df <- bind_rows(lag_2, lag_10,lag_25,lag_50)
+  
+  #Create the data frame for each simulation case
+  for (i in 1:nrow(slope_df)){
+  
+    assign(paste0("df_case",i), 
+          data.df %>% subset(case==i))
+  }
+
+  df_case_list <- list(df_case1,df_case2, df_case3, df_case4, df_case5, df_case6, df_case7, df_case8, df_case9,
+                     df_case10, df_case11, df_case12, df_case13, df_case14, df_case15, df_case16, df_case17, 
+                     df_case18, df_case19, df_case20, df_case21, df_case22)
+  
+  
+  
+  #Compute the item and context memory estimates, as well as hit and false alarm rates
+  for (i in 1:nrow(slope_df)){
+    
+    assign(paste0("model_fit_case",i), 
+         data.df %>% group_by(lag)  %>% 
+           subset(case==i) %>%
+           summarise(sum_HR = mean(hr),
+                     sum_FAR = mean(far),
+                     sum_source_performance = (sum_HR - sum_FAR),
+                     sum_item_performance = (sum_FAR/(1-sum_HR+sum_FAR)),
+                     case = i))
+    }
+  
+  model_fit_case_list <- list(model_fit_case1, model_fit_case2, model_fit_case3, model_fit_case4,
+                            model_fit_case5, model_fit_case6, model_fit_case7, model_fit_case8,
+                            model_fit_case9, model_fit_case10,model_fit_case11, model_fit_case12, model_fit_case13,
+                            model_fit_case14, model_fit_case15, model_fit_case16, model_fit_case17,
+                            model_fit_case18, model_fit_case19, model_fit_case20, model_fit_case21, model_fit_case22)
+  
+  
+  
+  
+  #General context memory fit
+  for (i in 1:length(model_fit_case_list)){
+    
+    p.obSource <- model_fit_case_list[[i]]$sum_source_performance
+    x1 <- p.obSource*m 
+    x1 <- as.integer(x1)
+  
+    Xs <- matrix(c(t,x1), ncol=2, nrow=4)
+  
+    assign(paste0("retention.pwr_source_case",i), 
+          maxlogL(x = Xs, dist = "power_logL", lower = lower_w1,
+                            upper = upper_w1, start = init_w1))
+    }
+  
+  retention.pwr_source_case_list <- list(retention.pwr_source_case1, retention.pwr_source_case2,
+                                       retention.pwr_source_case3, retention.pwr_source_case4,
+                                       retention.pwr_source_case5, retention.pwr_source_case6,
+                                       retention.pwr_source_case7, retention.pwr_source_case8,
+                                       retention.pwr_source_case9, retention.pwr_source_case10,
+                                       retention.pwr_source_case11, retention.pwr_source_case12,
+                                       retention.pwr_source_case13, retention.pwr_source_case14,
+                                       retention.pwr_source_case15, retention.pwr_source_case16,
+                                       retention.pwr_source_case17, retention.pwr_source_case18,
+                                       retention.pwr_source_case19, retention.pwr_source_case20,
+                                       retention.pwr_source_case21, retention.pwr_source_case22)
+  
+  
+  #Extract the parameters from the general context function fits. We will only need the scaling b parameter.
+  for (i in 1:length(retention.pwr_source_case_list)){
+    
+    assign(paste0("a_source_fit_case",i), retention.pwr_source_case_list[[i]]$fit$par[[1]])
+    assign(paste0("b_source_fit_case",i), retention.pwr_source_case_list[[i]]$fit$par[[2]])
+    assign(paste0("c_source_fit_case",i), retention.pwr_source_case_list[[i]]$fit$par[[3]])
+    
+    }
+
+    b_source_fit_cases <- c(b_source_fit_case1, b_source_fit_case2, b_source_fit_case3, b_source_fit_case4,
+                        b_source_fit_case5, b_source_fit_case6, b_source_fit_case7, b_source_fit_case8,
+                        b_source_fit_case9, b_source_fit_case10, b_source_fit_case11, b_source_fit_case12,
+                        b_source_fit_case13, b_source_fit_case14, b_source_fit_case15, b_source_fit_case16, 
+                        b_source_fit_case17, b_source_fit_case18, b_source_fit_case19, b_source_fit_case20,
+                        b_source_fit_case21, b_source_fit_case22)
+    
+    
+    
+    #General item memory fit
+    for (i in 1:length(model_fit_case_list)){
+      
+      p.obItem <- model_fit_case_list[[i]]$sum_item_performance
+      x2 <- p.obItem*m 
+      x2 <- as.integer(x2)
+  
+      Xi <- matrix(c(t,x2), ncol=2, nrow=4)
+  
+      assign(paste0("retention.pwr_item_case",i), 
+            maxlogL(x = Xi, dist = "power_logL", lower = lower_w1,
+                              upper = upper_w1, start = init_w1))
+      
+      }
+    retention.pwr_item_case_list <- list(retention.pwr_item_case1, retention.pwr_item_case2,
+                                     retention.pwr_item_case3, retention.pwr_item_case4, 
+                                     retention.pwr_item_case5, retention.pwr_item_case6,
+                                     retention.pwr_item_case7, retention.pwr_item_case8,
+                                     retention.pwr_item_case9, retention.pwr_item_case10,
+                                     retention.pwr_item_case11, retention.pwr_item_case12,
+                                     retention.pwr_item_case13, retention.pwr_item_case14,
+                                     retention.pwr_item_case15, retention.pwr_item_case16,
+                                     retention.pwr_item_case17, retention.pwr_item_case18,
+                                     retention.pwr_item_case19, retention.pwr_item_case20,
+                                     retention.pwr_item_case21, retention.pwr_item_case22)
+    
+    
+    #Extract the parameters from the general item function fits. We will only need the scaling b parameter.
+    for (i in 1:length(retention.pwr_item_case_list)){
+      
+      assign(paste0("a_item_fit_case",i), retention.pwr_item_case_list[[i]]$fit$par[[1]])
+      assign(paste0("b_item_fit_case",i), retention.pwr_item_case_list[[i]]$fit$par[[2]])
+      assign(paste0("c_item_fit_case",i), retention.pwr_item_case_list[[i]]$fit$par[[3]])
+      
+      }
+    
+    b_item_fit_cases <- c(b_item_fit_case1, b_item_fit_case2, b_item_fit_case3, b_item_fit_case4,
+                      b_item_fit_case5, b_item_fit_case6, b_item_fit_case7, b_item_fit_case8,
+                      b_item_fit_case9, b_item_fit_case10, b_item_fit_case11, b_item_fit_case12,
+                      b_item_fit_case13, b_item_fit_case14, b_item_fit_case15,b_item_fit_case16,
+                      b_item_fit_case17, b_item_fit_case18, b_item_fit_case19,
+                      b_item_fit_case20, b_item_fit_case21, b_item_fit_case22)
+    
+    
+    
+    #Separate the data frames for each case and nest based on subjects. We need to do this to be able to fit 
+    #the individual forgetting functions.
+    for (i in 1:length(df_case_list)){
+      assign(paste0("df_subject_case",i),
+             df_case_list[[i]] %>% 
+             group_by(subject,jolQ) %>% 
+             nest())
+    }
+    
+    #Individual Item Fits
+    item_model_fit_case1 <- df_subject_case1 %>% mutate(item_model = map(data, compute_indItem1))
+    item_model_fit_case2 <- df_subject_case2 %>% mutate(item_model = map(data, compute_indItem2))
+    item_model_fit_case3 <- df_subject_case3 %>% mutate(item_model = map(data, compute_indItem3))
+    item_model_fit_case4 <- df_subject_case4 %>% mutate(item_model = map(data, compute_indItem4))
+    item_model_fit_case5 <- df_subject_case5 %>% mutate(item_model = map(data, compute_indItem5))
+    item_model_fit_case6 <- df_subject_case6 %>% mutate(item_model = map(data, compute_indItem6))
+    item_model_fit_case7 <- df_subject_case7 %>% mutate(item_model = map(data, compute_indItem7))
+    item_model_fit_case8 <- df_subject_case8 %>% mutate(item_model = map(data, compute_indItem8))
+    item_model_fit_case9 <- df_subject_case9 %>% mutate(item_model = map(data, compute_indItem9))
+    item_model_fit_case10 <- df_subject_case10 %>% mutate(item_model = map(data, compute_indItem10))
+    item_model_fit_case11 <- df_subject_case11 %>% mutate(item_model = map(data, compute_indItem11))
+    item_model_fit_case12 <- df_subject_case12 %>% mutate(item_model = map(data, compute_indItem12))
+    item_model_fit_case13 <- df_subject_case13 %>% mutate(item_model = map(data, compute_indItem13))
+    item_model_fit_case14 <- df_subject_case14 %>% mutate(item_model = map(data, compute_indItem14))
+    item_model_fit_case15 <- df_subject_case15 %>% mutate(item_model = map(data, compute_indItem15))
+    item_model_fit_case16 <- df_subject_case16 %>% mutate(item_model = map(data, compute_indItem16))
+    item_model_fit_case17 <- df_subject_case17 %>% mutate(item_model = map(data, compute_indItem17))
+    item_model_fit_case18 <- df_subject_case18 %>% mutate(item_model = map(data, compute_indItem18))
+    item_model_fit_case19 <- df_subject_case19 %>% mutate(item_model = map(data, compute_indItem19))
+    item_model_fit_case20 <- df_subject_case20 %>% mutate(item_model = map(data, compute_indItem20))
+    item_model_fit_case21 <- df_subject_case21 %>% mutate(item_model = map(data, compute_indItem21))
+    item_model_fit_case22 <- df_subject_case22 %>% mutate(item_model = map(data, compute_indItem22))
+    
+    #Individual Source Fits
+    source_model_fit_case1 <- df_subject_case1 %>% mutate(source_model = map(data, compute_indSource1))
+    source_model_fit_case2 <- df_subject_case2 %>% mutate(source_model = map(data, compute_indSource2))
+    source_model_fit_case3 <- df_subject_case3 %>% mutate(source_model = map(data, compute_indSource3))
+    source_model_fit_case4 <- df_subject_case4 %>% mutate(source_model = map(data, compute_indSource4))
+    source_model_fit_case5 <- df_subject_case5 %>% mutate(source_model = map(data, compute_indSource5))
+    source_model_fit_case6 <- df_subject_case6 %>% mutate(source_model = map(data, compute_indSource6))
+    source_model_fit_case7 <- df_subject_case7 %>% mutate(source_model = map(data, compute_indSource7))
+    source_model_fit_case8 <- df_subject_case8 %>% mutate(source_model = map(data, compute_indSource8))
+    source_model_fit_case9 <- df_subject_case9 %>% mutate(source_model = map(data, compute_indSource9))
+    source_model_fit_case10 <- df_subject_case10 %>% mutate(source_model = map(data, compute_indSource10))
+    source_model_fit_case11 <- df_subject_case11 %>% mutate(source_model = map(data, compute_indSource11))
+    source_model_fit_case12 <- df_subject_case12 %>% mutate(source_model = map(data, compute_indSource12))
+    source_model_fit_case13 <- df_subject_case13 %>% mutate(source_model = map(data, compute_indSource13))
+    source_model_fit_case14 <- df_subject_case14 %>% mutate(source_model = map(data, compute_indSource14))
+    source_model_fit_case15 <- df_subject_case15 %>% mutate(source_model = map(data, compute_indSource15))
+    source_model_fit_case16 <- df_subject_case16 %>% mutate(source_model = map(data, compute_indSource16))
+    source_model_fit_case17 <- df_subject_case17 %>% mutate(source_model = map(data, compute_indSource17))
+    source_model_fit_case18 <- df_subject_case18 %>% mutate(source_model = map(data, compute_indSource18))
+    source_model_fit_case19 <- df_subject_case19 %>% mutate(source_model = map(data, compute_indSource19))
+    source_model_fit_case20 <- df_subject_case20 %>% mutate(source_model = map(data, compute_indSource20))
+    source_model_fit_case21 <- df_subject_case21 %>% mutate(source_model = map(data, compute_indSource21))
+    source_model_fit_case22 <- df_subject_case22 %>% mutate(source_model = map(data, compute_indSource22))
+    
+    item_model_fit_list <- list(item_model_fit_case1, item_model_fit_case2, item_model_fit_case3,
+                         item_model_fit_case4, item_model_fit_case5, item_model_fit_case6,
+                         item_model_fit_case7, item_model_fit_case8, item_model_fit_case9,
+                         item_model_fit_case10, item_model_fit_case11, item_model_fit_case12,
+                         item_model_fit_case13, item_model_fit_case14, item_model_fit_case15,
+                         item_model_fit_case16, item_model_fit_case17, item_model_fit_case18,
+                         item_model_fit_case19, item_model_fit_case20, item_model_fit_case21,
+                         item_model_fit_case22)
+    
+    source_model_fit_list <- list(source_model_fit_case1, source_model_fit_case2, source_model_fit_case3, 
+                           source_model_fit_case4, source_model_fit_case5, source_model_fit_case6,
+                           source_model_fit_case7, source_model_fit_case8, source_model_fit_case9,
+                           source_model_fit_case10, source_model_fit_case11, source_model_fit_case12, 
+                           source_model_fit_case13, source_model_fit_case14, source_model_fit_case15,
+                           source_model_fit_case16, source_model_fit_case17, source_model_fit_case18,
+                           source_model_fit_case19, source_model_fit_case20, source_model_fit_case21,
+                           source_model_fit_case22)
+    
+    
+    
+    #Extract the parameters for each subject - item memory
+    for (i in 1:length(item_model_fit_list)){
+      
+      for (j in 1:nrow(item_model_fit_list[[i]])){
+        
+        item_model_fit_list[[i]]$ai[j] <- item_model_fit_list[[i]]$item_model[[j]][1]$fit$par[1]
+        item_model_fit_list[[i]]$ci[j] <- item_model_fit_list[[i]]$item_model[[j]][1]$fit$par[2]
+        
+      }
+    }
+    
+    
+    #Extract the parameters for each subject - context memory
+    for (i in 1:length(source_model_fit_list)){
+      
+      for (j in 1:nrow(source_model_fit_list[[i]])){
+        
+        source_model_fit_list[[i]]$as[j] <- source_model_fit_list[[i]]$source_model[[j]][1]$fit$par[1]
+        source_model_fit_list[[i]]$cs[j] <- source_model_fit_list[[i]]$source_model[[j]][1]$fit$par[2]
+      }
+    }
+  
+    
+    
+    
+    
+    #Find the median values for item memory
+    item_medians <- data.frame()
+    
+    for (i in 1:length(item_model_fit_list)){
+      
+      medians <- item_model_fit_list[[i]] %>% group_by(jolQ) %>%
+        summarise(case = i,
+                  ai_median = median(ai),
+                  ci_median = median(ci))
+      
+      item_medians <- rbind(item_medians,medians)
+      }
+    
+    
+    
+    #Find the median values for context memory
+    source_medians <- data.frame()
+    
+    for(i in 1:length(source_model_fit_list)){
+      
+      medians <- source_model_fit_list[[i]] %>% group_by(jolQ) %>%
+        summarise(case = i,
+                  as_median = median(as),
+                  cs_median = median(cs))
+      
+      source_medians <- rbind(source_medians, medians)
+      
+    }
+    
+    median_values <- data.frame(item_medians$case, item_medians$jolQ, 
+                            item_medians$ai_median, item_medians$ci_median,
+                            source_medians$as_median, source_medians$cs_median)
+    colnames(median_values) <- c("case","qJOL","ai","ci","as","cs")
+    
+    
+    
+    
+    for (i in 1:nrow(slope_df)){
+      
+      assign(paste0("median_values_case",i),median_values %>% subset(case==i))
+      }
+    
+    median_values_list <- list(median_values_case1,median_values_case2,
+                           median_values_case3,median_values_case4,
+                           median_values_case5, median_values_case6,
+                           median_values_case7, median_values_case8,
+                           median_values_case9, median_values_case10,
+                           median_values_case11, median_values_case12,
+                           median_values_case13, median_values_case14,
+                           median_values_case15, median_values_case16,
+                           median_values_case17, median_values_case18,
+                           median_values_case19, median_values_case20,
+                           median_values_case21, median_values_case22)
+    
+    
+    
+    #Create a data frame for item memory with the corresponding parameters
+    item_model_parameters <- data.frame()
+    
+    for (i in 1:length(item_model_fit_list)){
+      item_model_values <- item_model_fit_list[[i]] %>%
+        summarise(case = i,
+                  subject = subject,
+                  jolQ = jolQ,
+                  ai = ai,
+                  ci = ci)
+      
+      item_model_parameters <- rbind(item_model_parameters, item_model_values)
+      }
+    
+    #Create a data frame for context memory with the corresponding parameters
+    source_model_parameters <- data.frame()
+    
+    for (i in 1:length(source_model_fit_list)){
+      
+      source_model_values <- source_model_fit_list[[i]] %>%
+        summarise(case = i,
+                  subject = subject,
+                  jolQ = jolQ,
+                  as = as,
+                  cs = cs)
+      
+      source_model_parameters <- rbind(source_model_parameters, source_model_values)
+      }
+    
+    model_parameters <- data.frame(item_model_parameters$case,
+                               item_model_parameters$subject, item_model_parameters$jolQ,
+                               item_model_parameters$ai, item_model_parameters$ci,
+                               source_model_parameters$as, source_model_parameters$cs)
+    colnames(model_parameters) <- c("Case","Subject","qJOL","ai","ci","as","cs")
+    
+    
+    for (i in 1:nrow(slope_df)){
+      assign(paste0("model_parameters_case",i),model_parameters %>% subset(Case==i))
+      }
+    
+    model_parameters_list <- list(model_parameters_case1,model_parameters_case2,
+                              model_parameters_case3, model_parameters_case4,
+                              model_parameters_case5, model_parameters_case6,
+                              model_parameters_case7, model_parameters_case8,
+                              model_parameters_case9, model_parameters_case10,
+                              model_parameters_case11, model_parameters_case12,
+                              model_parameters_case13, model_parameters_case14,
+                              model_parameters_case15, model_parameters_case16,
+                              model_parameters_case17, model_parameters_case18,
+                              model_parameters_case19, model_parameters_case20,
+                              model_parameters_case21, model_parameters_case22)
+    
+    
+    #Create a data frame for slopes for each parameter, we need these for the permutation analysis
+    for (i in 1:nrow(slope_df)){
+      assign(paste0("ai_slope_case",i), data.frame(matrix(ncol=6, nrow=1000)))
+      assign(paste0("ci_slope_case",i), data.frame(matrix(ncol=6, nrow=1000)))
+      assign(paste0("as_slope_case",i), data.frame(matrix(ncol=6, nrow=1000)))
+      assign(paste0("cs_slope_case",i), data.frame(matrix(ncol=6, nrow=1000)))
+      }
+    
+    ai_slope_case_list <- list(ai_slope_case1, ai_slope_case2,ai_slope_case3, ai_slope_case4,
+                           ai_slope_case5, ai_slope_case6,ai_slope_case7, ai_slope_case8,
+                           ai_slope_case9, ai_slope_case10,ai_slope_case11, ai_slope_case12,
+                           ai_slope_case13, ai_slope_case14,ai_slope_case15, ai_slope_case16,
+                           ai_slope_case17, ai_slope_case18,ai_slope_case19, ai_slope_case20,
+                           ai_slope_case21, ai_slope_case22)
+    
+    ci_slope_case_list <- list(ci_slope_case1, ci_slope_case2,ci_slope_case3, ci_slope_case4,
+                           ci_slope_case5, ci_slope_case6,ci_slope_case7, ci_slope_case8,
+                           ci_slope_case9, ci_slope_case10,ci_slope_case11, ci_slope_case12,
+                           ci_slope_case13, ci_slope_case14,ci_slope_case15, ci_slope_case16,
+                           ci_slope_case17, ci_slope_case18,ci_slope_case19, ci_slope_case20,
+                           ci_slope_case21, ci_slope_case22)
+    
+    as_slope_case_list <- list(as_slope_case1, as_slope_case2,as_slope_case3, as_slope_case4,
+                           as_slope_case5, as_slope_case6,as_slope_case7, as_slope_case8,
+                           as_slope_case9, as_slope_case10,as_slope_case11, as_slope_case12, 
+                           as_slope_case13, as_slope_case14,as_slope_case15, as_slope_case16, 
+                           as_slope_case17, as_slope_case18,as_slope_case19, as_slope_case20,
+                           as_slope_case21, as_slope_case22)
+    
+    cs_slope_case_list <- list(cs_slope_case1, cs_slope_case2,cs_slope_case3, cs_slope_case4, 
+                      cs_slope_case5, cs_slope_case6,cs_slope_case7, cs_slope_case8, 
+                      cs_slope_case9, cs_slope_case10,cs_slope_case11, cs_slope_case12, 
+                      cs_slope_case13, cs_slope_case14,cs_slope_case15, cs_slope_case16, 
+                      cs_slope_case17, cs_slope_case18,cs_slope_case19, cs_slope_case20,
+                      cs_slope_case21, cs_slope_case22)
+    
+    for (i in 1:length(ai_slope_case_list)){
+      colnames(ai_slope_case_list[[i]]) <- c("Case","PermNo","1","2","3","4")
+      colnames(ci_slope_case_list[[i]]) <- c("Case","PermNo","1","2","3","4")
+      colnames(as_slope_case_list[[i]]) <- c("Case","PermNo","1","2","3","4")
+      colnames(cs_slope_case_list[[i]]) <- c("Case","PermNo","1","2","3","4")
+      
+    }
+    
+    
+    #Arrange the data frames
+    ai_values_slope <- data.frame()
+    as_values_slope <- data.frame()
+    ci_values_slope <- data.frame()
+    cs_values_slope <- data.frame()
+    
+    for (i in 1:length(model_parameters_list)){
+      
+      ai_slopes <- model_parameters_list[[i]][c("Case","Subject", "qJOL", "ai")] %>%
+        pivot_wider(names_from = qJOL, values_from = ai)
+  
+      as_slopes <- model_parameters_list[[i]][c("Case","Subject", "qJOL", "as")] %>%
+        pivot_wider(names_from = qJOL, values_from = as)
+  
+      ci_slopes <- model_parameters_list[[i]][c("Case","Subject", "qJOL", "ci")] %>%
+        pivot_wider(names_from = qJOL, values_from = ci)
+  
+      cs_slopes <- model_parameters_list[[i]][c("Case","Subject", "qJOL", "cs")] %>%
+        pivot_wider(names_from = qJOL, values_from = cs)
+      
+      ai_values_slope <- rbind(ai_values_slope, ai_slopes)
+      as_values_slope <- rbind(as_values_slope, as_slopes)
+      ci_values_slope <- rbind(ci_values_slope, ci_slopes)
+      cs_values_slope <- rbind(cs_values_slope, cs_slopes)
+      
+      }
+    
+    for (i in 1:nrow(slope_df)){
+      
+      assign(paste0("ai_values_slope_case",i),ai_values_slope %>% subset(Case==i))
+      
+      assign(paste0("as_values_slope_case",i),as_values_slope %>% subset(Case==i))
+      
+      assign(paste0("ci_values_slope_case",i),ci_values_slope %>% subset(Case==i))
+      
+      assign(paste0("cs_values_slope_case",i),cs_values_slope %>% subset(Case==i))
+      
+      }
+    
+    ai_values_slope_list <- list(ai_values_slope_case1, ai_values_slope_case2,
+                          ai_values_slope_case3, ai_values_slope_case4, 
+                          ai_values_slope_case5, ai_values_slope_case6, 
+                          ai_values_slope_case7, ai_values_slope_case8, 
+                          ai_values_slope_case9, ai_values_slope_case10,
+                          ai_values_slope_case11, ai_values_slope_case12,
+                          ai_values_slope_case13, ai_values_slope_case14, 
+                          ai_values_slope_case15, ai_values_slope_case16, 
+                          ai_values_slope_case17, ai_values_slope_case18, 
+                          ai_values_slope_case19, ai_values_slope_case20,
+                          ai_values_slope_case21, ai_values_slope_case22)
+    
+    as_values_slope_list <- list(as_values_slope_case1,as_values_slope_case2, 
+                             as_values_slope_case3, as_values_slope_case4, 
+                             as_values_slope_case5, as_values_slope_case6, 
+                             as_values_slope_case7, as_values_slope_case8, 
+                             as_values_slope_case9, as_values_slope_case10,
+                             as_values_slope_case11, as_values_slope_case12, 
+                             as_values_slope_case13, as_values_slope_case14, 
+                             as_values_slope_case15, as_values_slope_case16,
+                             as_values_slope_case17, as_values_slope_case18, 
+                             as_values_slope_case19, as_values_slope_case20,
+                             as_values_slope_case21, as_values_slope_case22)
+    
+    ci_values_slope_list <- list(ci_values_slope_case1, ci_values_slope_case2, 
+                             ci_values_slope_case3, ci_values_slope_case4,
+                             ci_values_slope_case5, ci_values_slope_case6, 
+                             ci_values_slope_case7, ci_values_slope_case8, 
+                             ci_values_slope_case9, ci_values_slope_case10,
+                             ci_values_slope_case11, ci_values_slope_case12, 
+                             ci_values_slope_case13, ci_values_slope_case14, 
+                             ci_values_slope_case15, ci_values_slope_case16, 
+                             ci_values_slope_case17, ci_values_slope_case18, 
+                             ci_values_slope_case19, ci_values_slope_case20,
+                             ci_values_slope_case21, ci_values_slope_case22)
+    
+    cs_values_slope_list <- list(cs_values_slope_case1, cs_values_slope_case2, 
+                             cs_values_slope_case3, cs_values_slope_case4, 
+                             cs_values_slope_case5, cs_values_slope_case6, 
+                             cs_values_slope_case7, cs_values_slope_case8, 
+                             cs_values_slope_case9, cs_values_slope_case10,
+                             cs_values_slope_case11, cs_values_slope_case12, 
+                             cs_values_slope_case13, cs_values_slope_case14, 
+                             cs_values_slope_case15, cs_values_slope_case16,
+                             cs_values_slope_case17, cs_values_slope_case18,
+                             cs_values_slope_case19, cs_values_slope_case20, 
+                             cs_values_slope_case21, cs_values_slope_case22)
+    
+    
+    # Permutation analysis for each parameter
+    for (i in 1:length(ai_values_slope_list)){
+      
+      for (j in 1:1000){
+        
+        new_df <- t(apply(ai_values_slope_list[[i]][,3:6],1,sample))  #shuffle row wise (transpose is needed)
+        ai_slope_case_list[[i]][j,3:6] <- apply(new_df,2,median) #add new median parameters to the dataframe
+        ai_slope_case_list[[i]]$Case <- i
+        ai_slope_case_list[[i]]$PermNo[j] <- j
+        
+      }
+    }
+    
+    for (i in 1:length(as_values_slope_list)){
+      
+      for (j in 1:1000){
+        
+        new_df <- t(apply(as_values_slope_list[[i]][,3:6],1,sample))  #shuffle row wise (transpose is needed)
+        as_slope_case_list[[i]][j,3:6] <- apply(new_df,2,median) #add new median parameters to the dataframe
+        as_slope_case_list[[i]]$Case <- i
+        as_slope_case_list[[i]]$PermNo[j] <- j
+      }
+    }
+    
+    for (i in 1:length(ci_values_slope_list)){
+      
+      for (j in 1:1000){
+        
+        new_df <- t(apply(ci_values_slope_list[[i]][,3:6],1,sample))  #shuffle row wise (transpose is needed)
+        ci_slope_case_list[[i]][j,3:6] <- apply(new_df,2,median) #add new median parameters to the dataframe
+        ci_slope_case_list[[i]]$Case <- i
+        ci_slope_case_list[[i]]$PermNo[j] <- j
+      }
+  
+    }
+    
+    for (i in 1:length(cs_values_slope_list)){
+      
+      for (j in 1:1000){
+        
+        new_df <- t(apply(cs_values_slope_list[[i]][,3:6],1,sample))  #shuffle row wise (transpose is needed)
+        cs_slope_case_list[[i]][j,3:6] <- apply(new_df,2,median) #add new median parameters to the dataframe
+        cs_slope_case_list[[i]]$Case <- i
+        cs_slope_case_list[[i]]$PermNo[j] <- j
+      }
+    }
+   
+    
+    #Organize the data frames for the linear regression fits
+    ai_slope_models <- data.frame()
+    as_slope_models <- data.frame()
+    ci_slope_models <- data.frame()
+    cs_slope_models <- data.frame()
+    
+    for (i in 1:length(ai_slope_case_list)){
+      
+      ai_slope_models_temp <- ai_slope_case_list[[i]] %>%
+        pivot_longer(c("1", "2", "3", "4"), names_to = "qJOL", values_to = "ai")
+  
+      ai_slope_models <- rbind(ai_slope_models, ai_slope_models_temp)
+  
+      as_slope_models_temp <- as_slope_case_list[[i]] %>%
+        pivot_longer(c("1", "2", "3", "4"), names_to = "qJOL", values_to = "as")
+  
+      as_slope_models <- rbind(as_slope_models, as_slope_models_temp)
+  
+      ci_slope_models_temp <- ci_slope_case_list[[i]] %>%
+        pivot_longer(c("1", "2", "3", "4"), names_to = "qJOL", values_to = "ci")
+  
+      ci_slope_models <- rbind(ci_slope_models, ci_slope_models_temp)
+  
+      cs_slope_models_temp <- cs_slope_case_list[[i]] %>%
+        pivot_longer(c("1", "2", "3", "4"), names_to = "qJOL", values_to = "cs")
+  
+      cs_slope_models <- rbind(cs_slope_models, cs_slope_models_temp)
+      
+    }
+    
+    ai_slope_models$qJOL <- as.numeric(ai_slope_models$qJOL)
+    as_slope_models$qJOL <- as.numeric(as_slope_models$qJOL)
+    ci_slope_models$qJOL <- as.numeric(ci_slope_models$qJOL)
+    cs_slope_models$qJOL <- as.numeric(cs_slope_models$qJOL)
+    
+    ai_slope_models <- ai_slope_models %>% group_by(Case, PermNo) %>% do(model = lm(ai~qJOL, data=.))
+    
+    as_slope_models <- as_slope_models %>% group_by(Case, PermNo) %>% do(model = lm(as~qJOL, data=.))
+
+    ci_slope_models <- ci_slope_models %>% group_by(Case, PermNo) %>% do(model = lm(ci~qJOL, data=.))
+
+    cs_slope_models <- cs_slope_models %>% group_by(Case, PermNo) %>% do(model = lm(cs~qJOL, data=.)) 
+    
+    
+    
+    #Extract the slope values for each permutation 
+    for (i in 1:length(ai_slope_case_list)){
+      
+      for (j in 1:1000){
+        
+        ai_slope_case_list[[i]]$Slope[j] <- ai_slope_models$model[[j]][[1]][2]
+        as_slope_case_list[[i]]$Slope[j] <- as_slope_models$model[[j]][[1]][2]
+        ci_slope_case_list[[i]]$Slope[j] <- ci_slope_models$model[[j]][[1]][2]
+        cs_slope_case_list[[i]]$Slope[j] <- cs_slope_models$model[[j]][[1]][2]
+      }
+    }
+
+    ai_original_slopes <- data.frame()
+    as_original_slopes <- data.frame()
+    ci_original_slopes <- data.frame()
+    cs_original_slopes <- data.frame()
+
+    for (i in 1:length(median_values_list)){
+      
+      ai_model_temp <- lm(ai~qJOL, data=median_values_list[[i]])
+      ai_slope <- ai_model_temp$coefficients[[2]]
+  
+      as_model_temp <- lm(as~qJOL, data = median_values_list[[i]])
+      as_slope <- as_model_temp$coefficients[[2]]
+  
+      ci_model_temp <- lm(ci~qJOL, data = median_values_list[[i]])
+      ci_slope <- ci_model_temp$coefficients[[2]]
+  
+      cs_model_temp <- lm(cs~qJOL, data = median_values_list[[i]])
+      cs_slope <- cs_model_temp$coefficients[[2]]
+  
+      ai_original_slopes <- rbind(ai_original_slopes, ai_slope)
+      as_original_slopes <- rbind(as_original_slopes, as_slope)
+      ci_original_slopes <- rbind(ci_original_slopes, ci_slope)
+      cs_original_slopes <- rbind(cs_original_slopes, cs_slope)
+      
+    }
+    
+    colnames(ai_original_slopes) <- c("ai_slope")
+    colnames(as_original_slopes) <- c("as_slope")
+    colnames(ci_original_slopes) <- c("ci_slope")
+    colnames(cs_original_slopes) <- c("cs_slope")
+    
+    
+    ai_p_values_temp <- data.frame(matrix(ncol=3, nrow=22))
+    colnames(ai_p_values_temp) <- c("Case", "ai_p_value", "Iter")
+
+    as_p_values_temp <- data.frame(matrix(ncol=3, nrow=22))
+    colnames(as_p_values_temp) <- c("Case", "as_p_value", "Iter")
+
+    ci_p_values_temp <- data.frame(matrix(ncol=3, nrow=22))
+    colnames(ci_p_values_temp) <- c("Case", "ci_p_value", "Iter")
+
+    cs_p_values_temp <- data.frame(matrix(ncol=3, nrow=22))
+    colnames(cs_p_values_temp) <- c("Case", "cs_p_value", "Iter")
+
+    
+    #Create the final data frame for given iteration that includes all 1000 slope value
+    for (i in 1:length(ai_slope_case_list)){
+      
+      ai_p_values_temp$Iter <- n
+      as_p_values_temp$Iter <- n
+      ci_p_values_temp$Iter <- n
+      cs_p_values_temp$Iter <- n
+      
+      ai_p_values_temp$Case[i] <- i
+      as_p_values_temp$Case[i] <- i
+      ci_p_values_temp$Case[i] <- i
+      cs_p_values_temp$Case[i] <- i
+      
+      ai_p_temp <- mean(ai_slope_case_list[[i]]$Slope>ai_original_slopes$ai_slope[i])
+      as_p_temp <- mean(as_slope_case_list[[i]]$Slope>as_original_slopes$as_slope[i])
+      ci_p_temp <- mean(ci_slope_case_list[[i]]$Slope<ci_original_slopes$ci_slope[i])
+      cs_p_temp <- mean(cs_slope_case_list[[i]]$Slope<cs_original_slopes$cs_slope[i])
+  
+      ai_p_values_temp$ai_p_value[i] <- ai_p_temp
+      as_p_values_temp$as_p_value[i] <- as_p_temp
+      ci_p_values_temp$ci_p_value[i] <- ci_p_temp
+      cs_p_values_temp$cs_p_value[i] <- cs_p_temp
+      
+    }
+    
+    ai_p_values_all <- rbind(ai_p_values_all, ai_p_values_temp)
+    as_p_values_all <- rbind(as_p_values_all, as_p_values_temp)
+    ci_p_values_all <- rbind(ci_p_values_all, ci_p_values_temp)
+    cs_p_values_all <- rbind(cs_p_values_all, cs_p_values_temp)
+  
+}
+
+end_time <- Sys.time()
+
+time_it_takes <- end_time - start_time
+```
+
+Add the slope values to the data frames
+```{r}
+for (i in 1:nrow(slope_df)){
+  
+  for (j in 1:nrow(ai_p_values_all)){
+    
+    if (ai_p_values_all$Case[j] == i){
+      ai_p_values_all$ai_slope[j] = slope_df$ai_slope[i]
+    }
+    
+    if (as_p_values_all$Case[j] == i){
+      as_p_values_all$as_slope[j] = slope_df$as_slope[i]
+    }
+    
+    if (ci_p_values_all$Case[j] == i){
+      ci_p_values_all$ci_slope[j] = slope_df$ci_slope[i]
+    }
+    
+    if (cs_p_values_all$Case[j] == i){
+      cs_p_values_all$cs_slope[j] = slope_df$cs_slope[i]
+    }
+  }
+}
+```
+
+Combine the data frames and write it as csv file
+```{r}
+iter_df <- Reduce(function(...) merge(..., all.x=TRUE), 
+       list(as_p_values_all, ai_p_values_all, ci_p_values_all, cs_p_values_all))
+
+write.csv(iter_df, "Sim_Result.csv")
+```
+
+
+
+
+
