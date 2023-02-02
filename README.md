@@ -9,5 +9,3 @@ Installed RAM	16.0 GB (15.8 GB usable) <br>
 System type	64-bit operating system, x64-based processor <br>
 
 It calls for the ContextFunctions.R, ContextFunctions_Ind.R, ItemFunctions.R, ItemFunctions_Ind.R files, so these dependencies should be in the same directory as the main file.
-
-Visualizations file contains the dot plots and ROCs that were created for each simulation. The file needs Sim_Result.csv file to run.
